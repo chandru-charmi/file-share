@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AllWebHub Share - PC Hub</title>
+<style>
+:root{--p:#5b21b6;--v:#7c3aed;--l:#f5f3ff;--ink:#1e1b2e;--line:#ddd6fe}
+*{box-sizing:border-box}
+body{margin:0;font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);background:#fff}
+header{background:var(--p);color:#fff;padding:14px 18px;display:flex;justify-content:space-between;align-items:center}
+h1{font-size:1.25rem;margin:0}header span{font-size:.85rem;background:#ffffff26;padding:4px 10px;border-radius:99px}
+main{max-width:640px;margin:0 auto;padding:18px}
+h2{font-size:1.05rem;margin:24px 0 8px;color:var(--p)}
+p{margin:.3rem 0}.hint{color:#6b6880;font-size:.9rem}
+button{background:var(--v);color:#fff;border:0;border-radius:10px;padding:12px 18px;font:inherit;font-weight:600;cursor:pointer}
+button.alt{background:#fff;color:var(--p);border:1.5px solid var(--v)}button.small{padding:6px 12px;font-size:.85rem}
+button:focus-visible,input:focus-visible,a:focus-visible{outline:3px solid var(--v);outline-offset:2px}
+input[type=file]{width:100%;padding:14px;border:2px dashed var(--v);border-radius:12px;background:var(--l)}
+.row{display:flex;gap:10px;margin:10px 0;flex-wrap:wrap}
+ul{list-style:none;padding:0;margin:0}
+li{padding:12px;border:1.5px solid var(--line);border-radius:10px;margin-bottom:8px;word-break:break-all}
+li.empty{color:#6b6880;border-style:dashed}
+li div{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:6px}
+li div:last-child{margin-bottom:0}
+li span{color:#6b6880;font-size:.9rem;white-space:nowrap}
+li a{color:var(--p);font-weight:600}
+progress{width:100%;height:10px;accent-color:var(--v);display:block;margin-bottom:8px}
+.urls{display:flex;gap:16px;flex-wrap:wrap}.urls div{text-align:center}.urls a{font-weight:600;color:var(--p)}
+</style></head><body>
+<header><h1>AllWebHub Share</h1><span>PC Hub</span></header>
+<main>
+<section>
+  <h2>Open on your phone</h2>
+  <p class="hint">Join the same Wi-Fi (or this PC's hotspot), then scan with the phone camera or type the address.</p>
+  <div id="urls" class="urls"></div>
+</section>
+<section>
+  <h2>Send files to the hub</h2>
+  <input type="file" id="file" multiple>
+  <div class="row"><button id="btnSend">Send</button></div>
+  <ul id="txList"><li class="empty">Nothing is being sent from this device.</li></ul>
+</section>
+<section>
+  <h2>Incoming from other devices</h2>
+  <ul id="rxNow"><li class="empty">Nothing is being received.</li></ul>
+</section>
+<section>
+  <h2>Files on the hub</h2>
+  <p class="hint">Tap a file to download it. Any device on the network can download or delete.</p>
+  <ul id="files"><li class="empty">No files yet.</li></ul>
+</section>
+</main>
+<script src="qrcode.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const fmt=n=>n>=1073741824?(n/1073741824).toFixed(2)+' GB':n>=1048576?(n/1048576).toFixed(1)+' MB':Math.ceil(n/1024)+' KB';
+const mbs=(n,t0)=>(n/1048576/Math.max(0.001,(performance.now()-t0)/1000)).toFixed(1)+' MB/s';
+function el(tag,text,cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e}
+
+// ---- phone addresses + QR
+fetch('/api/info').then(r=>r.json()).then(list=>{
+  const box=$('urls');
+  if(!list.length){box.textContent='No network found. Connect this PC to Wi-Fi or turn on its hotspot.';return}
+  for(const u of list){
+    const d=el('div'),q=el('div');d.append(q,el('a',u));d.lastChild.href=u;box.append(d);
+    if(window.QRCode)new QRCode(q,{text:u,width:150,height:150,correctLevel:QRCode.CorrectLevel.L});
+  }
+});
+
+// ---- sending (this device -> hub)
+let q=[],busy=false;const mine=new Set();
+function row(list,name,size){
+  list.querySelector('.empty')?.remove();
+  const li=el('li'),top=el('div'),st=el('span'),p=document.createElement('progress'),b=el('button','Cancel','alt small');
+  p.max=1;p.value=0;top.append(el('strong',name+' ('+fmt(size)+')'),st);li.append(top,p,b);list.prepend(li);
+  return{p,b,set(t,v){st.textContent=t;if(v!==undefined)p.value=v},done(t){b.remove();st.textContent=t}};
+}
+$('btnSend').onclick=()=>{
+  for(const f of $('file').files){
+    const t={f,cancel:false,xhr:null,ui:row($('txList'),f.name,f.size)};
+    t.ui.set('Waiting');t.ui.b.onclick=()=>cancel(t);q.push(t);
+  }
+  $('file').value='';pump();
+};
+function cancel(t){t.cancel=true;if(t.xhr)t.xhr.abort();else{t.ui.done('Cancelled');q=q.filter(x=>x!==t)}}
+async function pump(){if(busy)return;busy=true;while(q.length){const t=q.shift();if(!t.cancel)await up(t)}busy=false}
+function up(t){return new Promise(res=>{
+  const x=new XMLHttpRequest(),t0=performance.now();t.xhr=x;mine.add(t.f.name);
+  x.open('PUT','/api/upload?name='+encodeURIComponent(t.f.name)+'&size='+t.f.size);
+  x.upload.onprogress=e=>t.ui.set('Sending '+mbs(e.loaded,t0),e.loaded/t.f.size);
+  const end=m=>{mine.delete(t.f.name);t.xhr=null;if(m==='Sent')t.ui.p.value=1;t.ui.done(m);res()};
+  x.onload=()=>end(x.status===200?'Sent':'Failed');x.onerror=()=>end('Failed');x.onabort=()=>end('Cancelled');
+  x.send(t.f);
+})}
+
+// ---- live list (every second)
+function fill(list,items,emptyText){list.replaceChildren(...(items.length?items:[el('li',emptyText,'empty')]))}
+async function poll(){
+  try{
+    const r=await (await fetch('/api/files',{cache:'no-store'})).json();
+    fill($('rxNow'),r.uploading.filter(u=>!mine.has(u.name)).map(u=>{
+      const li=el('li'),top=el('div'),p=document.createElement('progress');
+      p.max=1;p.value=u.size?u.received/u.size:0;
+      top.append(el('strong',u.name+' ('+fmt(u.size)+')'),el('span','Receiving '+Math.round(p.value*100)+'%'));
+      li.append(top,p);return li;
+    }),'Nothing is being received.');
+    fill($('files'),r.files.map(f=>{
+      const li=el('li'),top=el('div'),a=el('a',f.name),b=el('button','Delete','alt small');
+      a.href='/api/download/'+encodeURIComponent(f.name);a.download=f.name;
+      b.onclick=async()=>{if(confirm('Delete '+f.name+'?')){await fetch('/api/files/'+encodeURIComponent(f.name),{method:'DELETE'});poll()}};
+      top.append(a,el('span',fmt(f.size)),b);li.append(top);return li;
+    }),'No files yet.');
+  }catch(e){}
+  setTimeout(poll,1000);
+}
+poll();
+</script>
+</body></html>
